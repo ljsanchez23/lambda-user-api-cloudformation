@@ -1,0 +1,284 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lambda User API deployed with CloudFormation
+
+Resources:
+  UserscfTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Userscf
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  UserQueuecf:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: UserCreationQueuecf
+
+  UserNotificationTopiccf:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: UserNotificationTopiccf
+
+  UserNotificationTopiccfSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      Endpoint: ljsanchez23@hotmail.com
+      TopicArn: !Ref UserNotificationTopiccf
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt UserscfTable.Arn
+
+        - PolicyName: SQSPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt UserQueuecf.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt UserQueuecf.Arn
+
+        - PolicyName: SNSPublishPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref UserNotificationTopiccf
+
+        - PolicyName: LogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  UpdateUserFunctioncf:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: UpdateUserFunctioncf
+      Handler: src/handlers/update-user.handler
+      Runtime: nodejs18.x
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UserscfTable
+      Code:
+        S3Bucket: my-cf-lambda-bucket-ljsan
+        S3Key: lambda-user-api-cf.zip
+
+  DeleteUserFunctioncf:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: DeleteUserFunctioncf
+      Handler: src/handlers/delete-user.handler
+      Runtime: nodejs18.x
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UserscfTable
+      Code:
+        S3Bucket: my-cf-lambda-bucket-ljsan
+        S3Key: lambda-user-api-cf.zip
+
+  UserIdResourcecf:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref UsersResourcecf
+      PathPart: "{id}"
+      RestApiId: !Ref UserApicf
+
+  UpdateUserMethodcf:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref UserApicf
+      ResourceId: !Ref UserIdResourcecf
+      HttpMethod: PUT
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UpdateUserFunctioncf.Arn}/invocations"
+
+  DeleteUserMethodcf:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref UserApicf
+      ResourceId: !Ref UserIdResourcecf
+      HttpMethod: DELETE
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DeleteUserFunctioncf.Arn}/invocations"
+
+  UpdateUserFunctioncfPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref UpdateUserFunctioncf
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UserApicf}/*/PUT/users/*"
+
+  DeleteUserFunctioncfPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DeleteUserFunctioncf
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UserApicf}/*/DELETE/users/*"
+  GetUsersFunctioncf:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GetUsersFunctioncf
+      Handler: src/handlers/get-users.handler
+      Runtime: nodejs18.x
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UserscfTable
+      Code:
+        S3Bucket: my-cf-lambda-bucket-ljsan
+        S3Key: lambda-user-api-cf.zip
+
+  CreateUserFunctioncf:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CreateUserFunctioncf
+      Handler: src/handlers/create-user.handler
+      Runtime: nodejs18.x
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UserscfTable
+          USER_QUEUE_URL: !Ref UserQueuecf
+      Code:
+        S3Bucket: my-cf-lambda-bucket-ljsan
+        S3Key: lambda-user-api-cf.zip
+
+  SendEmailFunctioncf:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SendEmailFunctioncf
+      Handler: src/handlers/send-email.handler
+      Runtime: nodejs18.x
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref UserNotificationTopiccf
+      Code:
+        S3Bucket: my-cf-lambda-bucket-ljsan
+        S3Key: lambda-user-api-cf.zip
+
+  SendEmailEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt UserQueuecf.Arn
+      FunctionName: !Ref SendEmailFunctioncf
+      BatchSize: 1
+      Enabled: true
+
+  UserApicf:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: UserApicf
+
+  UsersResourcecf:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt UserApicf.RootResourceId
+      PathPart: users
+      RestApiId: !Ref UserApicf
+
+  GetUsersMethodcf:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref UserApicf
+      ResourceId: !Ref UsersResourcecf
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetUsersFunctioncf.Arn}/invocations"
+
+  CreateUserMethodcf:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref UserApicf
+      ResourceId: !Ref UsersResourcecf
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CreateUserFunctioncf.Arn}/invocations"
+
+  GetUsersFunctioncfPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref GetUsersFunctioncf
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UserApicf}/*/GET/users"
+
+  CreateUserFunctioncfPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CreateUserFunctioncf
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UserApicf}/*/POST/users"
+
+  UserApicfDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - GetUsersMethodcf
+      - CreateUserMethodcf
+    Properties:
+      RestApiId: !Ref UserApicf
+      StageName: Prod
+
+Outputs:
+  ApiUrl:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${UserApicf}.execute-api.${AWS::Region}.amazonaws.com/Prod"
